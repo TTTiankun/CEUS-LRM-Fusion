@@ -1,0 +1,20 @@
+train_dir: data/clinical/train
+val_dir: data/clinical/val
+test_dir: data/clinical/test
+
+save_dir: runs/clinical_lr
+positive_label: HCC
+random_seed: 42
+
+penalty: l2
+c_value: 1.0
+max_iter: 5000
+
+use_augmentation: false
+augment_n: 1
+augment_noise_std: 0.01
+
+export_bootstrap_coefficients: true
+n_bootstraps: 200
+alpha: 0.05
+top_k_coefficients: 20

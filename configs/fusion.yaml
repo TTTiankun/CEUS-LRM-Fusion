@@ -1,0 +1,15 @@
+train_ceus_csv: reports/ceus_gru/val/per_sample_predictions.csv
+train_clinical_csv: reports/clinical_lr/val/per_sample_predictions.csv
+train_label_csv: data/fusion/train_labels.csv
+
+val_ceus_csv: reports/ceus_gru/test/per_sample_predictions.csv
+val_clinical_csv: reports/clinical_lr/test/per_sample_predictions.csv
+val_label_csv: data/fusion/val_labels.csv
+
+test_ceus_csv:
+test_clinical_csv:
+test_label_csv:
+
+save_dir: runs/fusion
+random_seed: 42
+c_value: 1.0
