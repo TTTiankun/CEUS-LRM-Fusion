@@ -1,15 +1,60 @@
-train_ceus_csv: reports/ceus_gru/val/per_sample_predictions.csv
-train_clinical_csv: reports/clinical_lr/val/per_sample_predictions.csv
-train_label_csv: data/fusion/train_labels.csv
-
-val_ceus_csv: reports/ceus_gru/test/per_sample_predictions.csv
-val_clinical_csv: reports/clinical_lr/test/per_sample_predictions.csv
-val_label_csv: data/fusion/val_labels.csv
-
-test_ceus_csv:
-test_clinical_csv:
-test_label_csv:
+train_dir: data/fusion/train
+val_dir: data/fusion/val
+test_dir: data/fusion/test
 
 save_dir: runs/fusion
-random_seed: 42
-c_value: 1.0
+device: cuda
+random_seed: 24
+
+batch_size: 32
+epochs: 500
+optimizer: adamw
+lr: 0.0001
+weight_decay: 0.005
+warmup_epochs: 10
+use_swa: true
+swa_start_epoch: 0.9
+swa_lr: 0.0001
+
+grad_clip: 0.5
+label_smoothing: 0.05
+auxiliary_loss_weight: 0.3
+early_stop_patience: 150
+min_delta: 0.0
+
+attention_dim: 80
+gru_dims: [64, 32]
+num_attention_heads: 8
+use_attention_mapper: true
+dropout: 0.2
+
+use_augmentation: true
+augmentations:
+  gaussian_noise:
+    enable: true
+    noise_std: 0.1
+  time_mask:
+    enable: false
+    mask_pct: 0.2
+    max_mask_len: 5
+  feature_mask:
+    enable: false
+    feat_mask_pct: 0.5
+  temporal_jitter:
+    enable: false
+    window_size: 3
+    jitter_prob: 0.3
+  time_warp:
+    enable: false
+    stretch_sigma: 0.15
+    stretch_prob: 0.2
+
+confidence_threshold: 0.5
+fold_id: 1
+positive_class_for_threshold: HCC
+max_attention_pngs: 10
+
+confidence_suppression:
+  enable: true
+  threshold: 0.9
+  suppress_ratio: 0.2

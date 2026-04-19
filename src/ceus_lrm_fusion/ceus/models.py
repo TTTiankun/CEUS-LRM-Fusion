@@ -1,4 +1,4 @@
-"""Model definitions for the CEUS-GRU branch."""
+"""Model definitions shared by the CEUS-GRU and LRM-Fusion branches."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ import torch.nn.functional as F
 
 
 class MultiHeadSelfAttention(nn.Module):
-    """Lightweight self-attention block used before temporal recurrence."""
+    """Multi-head self-attention with per-head trainable scaling."""
 
-    def __init__(self, hidden_dim: int, num_heads: int = 4) -> None:
+    def __init__(self, hidden_dim: int, num_heads: int = 8) -> None:
         super().__init__()
         if hidden_dim % num_heads != 0:
             raise ValueError("hidden_dim must be divisible by num_heads")
@@ -21,7 +21,10 @@ class MultiHeadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
         self.projection = nn.Linear(hidden_dim, hidden_dim * 3, bias=False)
+        self.scale = nn.Parameter(torch.full((num_heads,), 1 / math.sqrt(self.head_dim)))
         self.output = nn.Linear(hidden_dim, hidden_dim)
+        nn.init.xavier_uniform_(self.projection.weight)
+        nn.init.xavier_uniform_(self.output.weight)
 
     def forward(
         self,
@@ -34,17 +37,18 @@ class MultiHeadSelfAttention(nn.Module):
             tensor.view(batch_size, sequence_length, self.num_heads, self.head_dim).transpose(1, 2)
             for tensor in qkv
         ]
-        scores = torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(self.head_dim)
+        scores = torch.matmul(query, key.transpose(-1, -2))
+        scores = scores * self.scale.view(1, self.num_heads, 1, 1)
         if mask is not None:
-            scores = scores.masked_fill(~mask[:, None, None, :], -1e9)
-        weights = torch.softmax(scores, dim=-1)
+            scores = scores.masked_fill(~mask[:, None, None, :], -1e4)
+        weights = F.softmax(scores, dim=-1)
         attended = torch.matmul(weights, value)
         attended = attended.transpose(1, 2).contiguous().view(batch_size, sequence_length, hidden_dim)
         return self.output(attended), weights.mean(dim=1)
 
 
 class AttentionGRUModelPro(nn.Module):
-    """Reference CEUS-GRU model used for the public repository."""
+    """Original residual bidirectional attention-GRU used in the legacy codebase."""
 
     def __init__(
         self,
@@ -52,7 +56,7 @@ class AttentionGRUModelPro(nn.Module):
         attention_dim: int,
         gru_dims: Iterable[int],
         num_classes: int,
-        n_heads: int = 4,
+        n_heads: int = 8,
         dropout: float = 0.1,
         use_attention_mapper: bool = True,
     ) -> None:
@@ -93,7 +97,7 @@ class AttentionGRUModelPro(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(max(previous_dim // 2, num_classes), num_classes),
         )
-        self.auxiliary_head = nn.Linear(gru_dims[0] * 2, num_classes)
+        self.auxiliary_head = nn.Linear(first_gru_dim * 2, num_classes)
 
     def forward(
         self,

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import yaml
+from torch.nn.functional import cross_entropy
 from torch.utils.data import DataLoader
 
 from ceus_lrm_fusion.ceus.data import TimeSeriesDataset, pad_collate_fn
@@ -38,6 +39,7 @@ def build_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader | None]:
         directory=config["train_dir"],
         augment=bool(config.get("use_augmentation", True)),
         aug_cfg=config.get("augmentations", {}),
+        confidence_cfg=config.get("confidence_suppression", {}),
     )
     val_dataset = None
     if config.get("val_dir"):
@@ -45,6 +47,7 @@ def build_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader | None]:
             directory=config["val_dir"],
             label_map=train_dataset.label_map,
             augment=False,
+            confidence_cfg=config.get("confidence_suppression", {}),
         )
 
     batch_size = int(config.get("batch_size", 16))
@@ -84,12 +87,27 @@ def compute_loss(
     logits: torch.Tensor,
     auxiliary_logits: torch.Tensor | None,
     labels: torch.Tensor,
-    criterion: nn.Module,
+    label_smoothing: float,
     aux_weight: float,
 ) -> torch.Tensor:
-    loss = criterion(logits, labels)
+    if label_smoothing > 0:
+        num_classes = logits.size(1)
+        smooth_labels = torch.full_like(logits, label_smoothing / (num_classes - 1))
+        smooth_labels.scatter_(1, labels.unsqueeze(1), 1.0 - label_smoothing)
+        loss = torch.mean(torch.sum(-smooth_labels * torch.log_softmax(logits, dim=1), dim=1))
+    else:
+        loss = cross_entropy(logits, labels)
     if auxiliary_logits is not None and aux_weight > 0:
-        loss = loss + aux_weight * criterion(auxiliary_logits, labels)
+        if label_smoothing > 0:
+            num_classes = auxiliary_logits.size(1)
+            smooth_labels = torch.full_like(auxiliary_logits, label_smoothing / (num_classes - 1))
+            smooth_labels.scatter_(1, labels.unsqueeze(1), 1.0 - label_smoothing)
+            auxiliary_loss = torch.mean(
+                torch.sum(-smooth_labels * torch.log_softmax(auxiliary_logits, dim=1), dim=1)
+            )
+        else:
+            auxiliary_loss = cross_entropy(auxiliary_logits, labels)
+        loss = loss + aux_weight * auxiliary_loss
     return loss
 
 
@@ -97,10 +115,10 @@ def run_epoch(
     model: AttentionGRUModelPro,
     loader: DataLoader,
     device: torch.device,
-    criterion: nn.Module,
     optimizer: torch.optim.Optimizer | None = None,
-    aux_weight: float = 0.2,
+    aux_weight: float = 0.3,
     grad_clip: float = 0.0,
+    label_smoothing: float = 0.0,
 ) -> Dict:
     train_mode = optimizer is not None
     model.train(train_mode)
@@ -119,7 +137,7 @@ def run_epoch(
             optimizer.zero_grad()
 
         logits, _, auxiliary_logits = model(inputs, lengths)
-        loss = compute_loss(logits, auxiliary_logits, labels, criterion, aux_weight)
+        loss = compute_loss(logits, auxiliary_logits, labels, label_smoothing, aux_weight)
 
         if train_mode:
             loss.backward()
@@ -170,23 +188,39 @@ def main() -> None:
     with open(save_dir / "config.yaml", "w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
     model = build_model(config, device)
-    criterion = nn.CrossEntropyLoss(label_smoothing=float(config.get("label_smoothing", 0.0)))
-
     optimizer_name = str(config.get("optimizer", "adamw")).lower()
     learning_rate = float(config.get("lr", 1e-3))
+    weight_decay = float(config.get("weight_decay", 0.0))
     if optimizer_name == "adam":
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     elif optimizer_name == "sgd":
         optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
     else:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
+    total_epochs = int(config.get("epochs", 100))
+    warmup_epochs = int(config.get("warmup_epochs", 0))
     scheduler = None
-    if config.get("use_cosine_scheduler", True):
+    if total_epochs > warmup_epochs and config.get("use_cosine_scheduler", True):
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=int(config.get("epochs", 100)),
+            T_max=total_epochs - warmup_epochs,
         )
+    warmup_scheduler = None
+    if warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lambda epoch: (epoch + 1) / warmup_epochs if epoch < warmup_epochs else 1.0,
+        )
+
+    use_swa = bool(config.get("use_swa", False))
+    swa_model = None
+    swa_scheduler = None
+    swa_start = None
+    if use_swa:
+        swa_start = int(total_epochs * float(config.get("swa_start_epoch", 0.8)))
+        swa_model = torch.optim.swa_utils.AveragedModel(model)
+        swa_scheduler = torch.optim.swa_utils.SWALR(optimizer, swa_lr=float(config.get("swa_lr", learning_rate)))
 
     early_stopping = None
     if val_loader is not None and config.get("early_stop_patience"):
@@ -197,17 +231,17 @@ def main() -> None:
         )
 
     history = []
-    best_auc = -np.inf
+    best_score = -np.inf
     best_epoch = 0
-    for epoch in range(1, int(config.get("epochs", 100)) + 1):
+    for epoch in range(1, total_epochs + 1):
         train_metrics = run_epoch(
             model=model,
             loader=train_loader,
             device=device,
-            criterion=criterion,
             optimizer=optimizer,
-            aux_weight=float(config.get("auxiliary_loss_weight", 0.2)),
+            aux_weight=float(config.get("auxiliary_loss_weight", 0.3)),
             grad_clip=float(config.get("grad_clip", 0.0)),
+            label_smoothing=float(config.get("label_smoothing", 0.0)),
         )
         record = {"epoch": epoch, "train": train_metrics}
 
@@ -216,17 +250,17 @@ def main() -> None:
                 model=model,
                 loader=val_loader,
                 device=device,
-                criterion=criterion,
                 optimizer=None,
-                aux_weight=float(config.get("auxiliary_loss_weight", 0.2)),
+                aux_weight=float(config.get("auxiliary_loss_weight", 0.3)),
+                label_smoothing=float(config.get("label_smoothing", 0.0)),
             )
             record["val"] = val_metrics
-            monitored_auc = float(val_metrics["auc"]) if val_metrics["auc"] is not None else float(val_metrics["accuracy"])
-            if monitored_auc > best_auc:
-                best_auc = monitored_auc
+            monitored_score = float(val_metrics["accuracy"])
+            if monitored_score > best_score:
+                best_score = monitored_score
                 best_epoch = epoch
                 save_checkpoint(save_dir / "best.pt", model, config, epoch, val_metrics)
-            if early_stopping and early_stopping.step(monitored_auc):
+            if early_stopping and early_stopping.step(monitored_score):
                 history.append(record)
                 print(
                     f"Epoch {epoch}: train_loss={train_metrics['loss']:.4f} "
@@ -238,8 +272,9 @@ def main() -> None:
                 f"val_loss={val_metrics['loss']:.4f} val_auc={val_metrics['auc']:.4f} val_acc={val_metrics['accuracy']:.4f}"
             )
         else:
-            if train_metrics["auc"] is not None and train_metrics["auc"] > best_auc:
-                best_auc = float(train_metrics["auc"])
+            monitored_score = float(train_metrics["accuracy"])
+            if monitored_score > best_score:
+                best_score = monitored_score
                 best_epoch = epoch
                 save_checkpoint(save_dir / "best.pt", model, config, epoch, train_metrics)
             print(
@@ -249,13 +284,21 @@ def main() -> None:
 
         history.append(record)
         save_checkpoint(save_dir / "last.pt", model, config, epoch, record.get("val", train_metrics))
-        if scheduler is not None:
+        if warmup_scheduler is not None and epoch <= warmup_epochs:
+            warmup_scheduler.step()
+        elif scheduler is not None:
             scheduler.step()
+        if use_swa and swa_model is not None and swa_scheduler is not None and swa_start is not None and epoch > swa_start:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
 
     with open(save_dir / "history.json", "w", encoding="utf-8") as handle:
         json.dump(history, handle, indent=2)
+    if use_swa and swa_model is not None:
+        torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
+        save_checkpoint(save_dir / "best_swa.pt", swa_model.module, config, total_epochs, {"swa": True})
     with open(save_dir / "summary.json", "w", encoding="utf-8") as handle:
-        json.dump({"best_epoch": best_epoch, "best_auc": best_auc, "num_epochs": len(history)}, handle, indent=2)
+        json.dump({"best_epoch": best_epoch, "best_accuracy": best_score, "num_epochs": len(history)}, handle, indent=2)
 
 
 if __name__ == "__main__":

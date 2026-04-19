@@ -6,40 +6,46 @@ save_dir: runs/ceus_gru
 device: cuda
 random_seed: 42
 
-batch_size: 16
-epochs: 150
+batch_size: 64
+epochs: 500
 optimizer: adamw
-lr: 0.0005
-grad_clip: 1.0
-label_smoothing: 0.02
-auxiliary_loss_weight: 0.2
-early_stop_patience: 20
+lr: 0.0001
+weight_decay: 0.005
+warmup_epochs: 10
+use_swa: true
+swa_start_epoch: 0.1
+swa_lr: 0.0001
+
+grad_clip: 0.5
+label_smoothing: 0.05
+auxiliary_loss_weight: 0.3
+early_stop_patience: 150
 min_delta: 0.0
 use_cosine_scheduler: true
 
-attention_dim: 32
-gru_dims: [128, 64]
-num_attention_heads: 4
+attention_dim: 40
+gru_dims: [2048, 1024, 512, 256]
+num_attention_heads: 8
 use_attention_mapper: true
-dropout: 0.15
+dropout: 0.2
 
 use_augmentation: true
 augmentations:
   gaussian_noise:
-    enable: false
-    noise_std: 0.02
+    enable: true
+    noise_std: 0.15
   time_mask:
-    enable: false
-    mask_pct: 0.10
+    enable: true
+    mask_pct: 0.3
     max_mask_len: 3
   feature_mask:
     enable: false
-    feat_mask_pct: 0.10
+    feat_mask_pct: 0.15
   temporal_jitter:
-    enable: false
+    enable: true
     window_size: 3
     jitter_prob: 0.20
   time_warp:
-    enable: false
-    stretch_sigma: 0.10
+    enable: true
+    stretch_sigma: 0.15
     stretch_prob: 0.20

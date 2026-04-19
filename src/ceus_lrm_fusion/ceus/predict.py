@@ -26,7 +26,12 @@ def main() -> None:
     label_map = config["label_map"]
     class_names = [name for name, _ in sorted(label_map.items(), key=lambda item: item[1])]
 
-    dataset = TimeSeriesDataset(directory=args.input, label_map=label_map, augment=False)
+    dataset = TimeSeriesDataset(
+        directory=args.input,
+        label_map=label_map,
+        augment=False,
+        confidence_cfg=config.get("confidence_suppression", {}),
+    )
     loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=pad_collate_fn)
 
     model = AttentionGRUModelPro(

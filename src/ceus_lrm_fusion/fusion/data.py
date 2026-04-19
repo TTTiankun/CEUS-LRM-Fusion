@@ -1,38 +1,43 @@
-"""Data alignment utilities for case-level fusion."""
+"""Data helpers for the neural LRM-Fusion branch."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
-import pandas as pd
+from torch.utils.data import DataLoader
 
-
-def _read_prediction_csv(path: str) -> pd.DataFrame:
-    frame = pd.read_csv(path)
-    required_columns = {"sample_name", "prob_hcc"}
-    missing = required_columns - set(frame.columns)
-    if missing:
-        raise ValueError(f"{path} is missing required columns: {sorted(missing)}")
-    return frame
+from ceus_lrm_fusion.ceus.data import TimeSeriesDataset, pad_collate_fn
 
 
-def load_fusion_table(
-    ceus_csv: str,
-    clinical_csv: str,
-    label_csv: str | None = None,
-) -> pd.DataFrame:
-    """Join CEUS and clinical case-level probabilities on sample_name."""
-    ceus_frame = _read_prediction_csv(ceus_csv)[["sample_name", "prob_hcc"]].rename(
-        columns={"prob_hcc": "ceus_prob_hcc"}
+def build_dataloaders(config: Dict) -> Tuple[DataLoader, DataLoader | None, TimeSeriesDataset]:
+    train_dataset = TimeSeriesDataset(
+        directory=config["train_dir"],
+        augment=bool(config.get("use_augmentation", True)),
+        aug_cfg=config.get("augmentations", {}),
+        confidence_cfg=config.get("confidence_suppression", {}),
     )
-    clinical_frame = _read_prediction_csv(clinical_csv)[["sample_name", "prob_hcc"]].rename(
-        columns={"prob_hcc": "clinical_prob_hcc"}
+    val_dataset = None
+    if config.get("val_dir"):
+        val_dataset = TimeSeriesDataset(
+            directory=config["val_dir"],
+            label_map=train_dataset.label_map,
+            augment=False,
+            confidence_cfg=config.get("confidence_suppression", {}),
+        )
+
+    batch_size = int(config.get("batch_size", 32))
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=pad_collate_fn,
     )
-    merged = ceus_frame.merge(clinical_frame, on="sample_name", how="inner")
-    if label_csv:
-        labels = pd.read_csv(label_csv)
-        if not {"sample_name", "label"}.issubset(labels.columns):
-            raise ValueError("Label CSV must contain sample_name and label columns")
-        merged = merged.merge(labels[["sample_name", "label"]], on="sample_name", how="inner")
-    return merged
+    val_loader = None
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=pad_collate_fn,
+        )
+    return train_loader, val_loader, train_dataset

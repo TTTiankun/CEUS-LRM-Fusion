@@ -112,6 +112,7 @@ class TimeSeriesDataset(Dataset):
         label_map: Optional[Dict[str, int]] = None,
         augment: bool = False,
         aug_cfg: Optional[Dict] = None,
+        confidence_cfg: Optional[Dict] = None,
     ) -> None:
         self.directory = Path(directory)
         if not self.directory.exists():
@@ -137,6 +138,7 @@ class TimeSeriesDataset(Dataset):
         self.feature_dim = int(first_sample.shape[1])
         self.augment = augment
         self.aug_cfg = aug_cfg or {}
+        self.confidence_cfg = confidence_cfg or {}
 
     def _load_npz(self, file_path: Path) -> np.ndarray:
         with np.load(file_path) as content:
@@ -163,10 +165,45 @@ class TimeSeriesDataset(Dataset):
                 class_b: float(prob_b),
             }
             ordered = [probabilities.get(label_name, 0.0) for label_name, _ in sorted(self.label_map.items(), key=lambda item: item[1])]
+            ordered = self._apply_confidence_adjustment(ordered)
             sequence.append(ordered)
         if not sequence:
             raise ValueError(f"No valid sequence rows found in {file_path}")
         return np.asarray(sequence, dtype=np.float32)
+
+    def _apply_confidence_adjustment(self, probabilities: List[float]) -> List[float]:
+        adjusted = list(probabilities)
+        if len(adjusted) != 2:
+            return adjusted
+
+        if self.confidence_cfg.get("enable", False):
+            threshold = float(self.confidence_cfg.get("threshold", 0.9))
+            suppress_ratio = float(self.confidence_cfg.get("suppress_ratio", 0.2))
+            max_index = int(np.argmax(adjusted))
+            min_index = 1 - max_index
+            if adjusted[max_index] > threshold:
+                shift_amount = (adjusted[max_index] - 0.5) * suppress_ratio
+                max_shift = (adjusted[max_index] - adjusted[min_index]) / 2 * 0.9
+                shift_amount = min(shift_amount, max_shift)
+                adjusted[max_index] -= shift_amount
+                adjusted[min_index] += shift_amount
+
+        if self.confidence_cfg.get("boost_enable", False):
+            boost_threshold = float(self.confidence_cfg.get("boost_threshold", 0.7))
+            boost_ratio = float(self.confidence_cfg.get("boost_ratio", 0.2))
+            max_index = int(np.argmax(adjusted))
+            min_index = 1 - max_index
+            if adjusted[max_index] < boost_threshold:
+                boost_amount = (adjusted[max_index] - 0.5) * boost_ratio
+                max_boost = 1 - adjusted[max_index]
+                boost_amount = min(boost_amount, max_boost)
+                adjusted[max_index] += boost_amount
+                adjusted[min_index] = max(0.01, adjusted[min_index] - boost_amount)
+
+        total = sum(adjusted)
+        if abs(total - 1.0) < 1e-6 and total > 0:
+            adjusted = [value / total for value in adjusted]
+        return adjusted
 
     def _load_sequence(self, file_path: Path) -> np.ndarray:
         if file_path.suffix.lower() == ".npz":

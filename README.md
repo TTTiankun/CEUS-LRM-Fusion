@@ -1,27 +1,25 @@
 # CEUS-LRM-Fusion
 
-Public reference implementation for the study:
+Reference codebase for the CEUS LI-RADS LR-M study:
 
-**AI-Assisted Differentiation of Hepatocellular Carcinoma From Non-HCC Malignancies in CEUS LI-RADS LR-M Lesions: Retrospective Development and Prospective Test Study**
+**AI-Assisted Differentiation of Hepatocellular Carcinoma From Non-HCC Malignancies in CEUS LI-RADS LR-M Lesions**
 
-This repository is organized as a paper companion codebase rather than a local experiment workspace. It retains the final methodological mainline only:
+## Task Definition
 
-- `CEUS-GRU`: temporal CEUS sequence model
-- `Clinical-LR`: logistic regression model using structured clinical variables
-- `LRM-Fusion`: case-level fusion of CEUS and clinical probabilities
-
-Patient-derived datasets, trained weights, cached figures, and historical experiment outputs are intentionally excluded from the public repository.
-
-## Study task
-
-The target task is binary classification within **CEUS LI-RADS LR-M lesions**:
+The prediction target is binary classification within **CEUS LI-RADS LR-M lesions**:
 
 - positive class: `HCC`
 - negative class: `non-HCC malignancy`
 
-In the manuscript, the LR-M category defines the inclusion scope. It is not the prediction target itself.
+The LR-M category defines the inclusion scope, not the prediction target.
 
-## Repository structure
+## Branches
+
+- `CEUS-GRU`: temporal CEUS sequence model using depthwise-pointwise feature projection, trainable-scale multi-head self-attention, and residual bidirectional GRUs
+- `Clinical-LR`: logistic regression over structured clinical variables
+- `LRM-Fusion`: neural fusion branch using the same `AttentionGRUModel` family as the CEUS-GRU, but with a fusion-sequence input format instead of a temporal CEUS feature sequence
+
+## Repository Structure
 
 ```text
 .
@@ -29,9 +27,6 @@ In the manuscript, the LR-M category defines the inclusion scope. It is not the 
 │   ├── ceus_gru.yaml
 │   ├── clinical_lr.yaml
 │   └── fusion.yaml
-├── docs/
-│   ├── data_format.md
-│   └── manuscript/
 ├── scripts/
 │   ├── train_ceus.py
 │   ├── train_clinical.py
@@ -40,7 +35,8 @@ In the manuscript, the LR-M category defines the inclusion scope. It is not the 
 │   ├── evaluate_clinical.py
 │   ├── evaluate_fusion.py
 │   ├── prepare_clinical_txt.py
-│   └── prepare_clinical_folds.py
+│   ├── prepare_clinical_folds.py
+│   └── report_model_stats.py
 └── src/
     └── ceus_lrm_fusion/
         ├── ceus/
@@ -50,63 +46,66 @@ In the manuscript, the LR-M category defines the inclusion scope. It is not the 
 
 ## Installation
 
-Create a Python environment and install the package in editable mode:
-
 ```bash
 pip install -e .
 ```
 
-If you prefer requirements-based installation:
+or
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Data organization
+## Data Layout
 
-The repository does not ship with clinical or CEUS data.
+The repository does not include patient data or checkpoints.
 
-- CEUS temporal data: `data/ceus/{train,val,test}/`
-- Clinical feature files: `data/clinical/{train,val,test}/{HCC,UNHCC}/`
-- Fusion labels: `data/fusion/*.csv`
+### CEUS-GRU
 
+- training split: `data/ceus/train`
+- validation split: `data/ceus/val`
+- test split: `data/ceus/test`
+- supported file types: `.npz` feature sequences or `.txt` probability sequences
 
-## Training workflow
+### Clinical-LR
 
-### 1. Train the CEUS temporal branch
+- training split: `data/clinical/train/{HCC,UNHCC}`
+- validation split: `data/clinical/val/{HCC,UNHCC}`
+- test split: `data/clinical/test/{HCC,UNHCC}`
+- each sample is a whitespace-separated feature text file
+
+### LRM-Fusion
+
+- training split: `data/fusion/train`
+- validation split: `data/fusion/val`
+- test split: `data/fusion/test`
+- each sample is a temporal fusion sequence in `.txt` or `.npz` form
+
+The reconciled fusion branch expects prepared multimodal sequences. It does **not** use the previous case-level CSV logistic fusion design.
+
+## Training
+
+### CEUS-GRU
 
 ```bash
 python scripts/train_ceus.py --config configs/ceus_gru.yaml
 ```
 
-Outputs are saved under `runs/ceus_gru/` by default, including:
-
-- `best.pt`
-- `last.pt`
-- `history.json`
-- `summary.json`
-
-### 2. Train the clinical branch
+### Clinical-LR
 
 ```bash
 python scripts/train_clinical.py --config configs/clinical_lr.yaml
 ```
 
-Outputs are saved under `runs/clinical_lr/`, including:
-
-- `model_bundle.pkl`
-- `coefficients.csv`
-- `summary.json`
-
-### 3. Train the fusion branch
-
-Run the CEUS and clinical evaluation steps first to generate case-level probability CSV files, then update `configs/fusion.yaml` and train:
+### LRM-Fusion
 
 ```bash
 python scripts/train_fusion.py --config configs/fusion.yaml
 ```
 
-## Evaluation workflow
+Outputs are saved under the configured `save_dir` and include `best.pt`, `last.pt`, `history.json`, `summary.json`, and optional `best_swa.pt`.
+
+## Evaluation
 
 ### CEUS-GRU
 
@@ -114,33 +113,27 @@ python scripts/train_fusion.py --config configs/fusion.yaml
 python scripts/evaluate_ceus.py --checkpoint runs/ceus_gru/best.pt --output reports/ceus_gru
 ```
 
-The evaluator exports:
-
-- per-sample prediction tables
-- attention weight tables
-- ROC and PR curve points
-- confusion matrix, ROC, and PR figures
-- validation-set Youden threshold
-
 ### Clinical-LR
 
 ```bash
 python scripts/evaluate_clinical.py --bundle runs/clinical_lr/model_bundle.pkl --output reports/clinical_lr
 ```
 
-The evaluator exports:
-
-- per-sample prediction tables
-- coefficient table with bootstrap confidence intervals
-- confusion matrix, ROC, PR, and coefficient figures
-
 ### LRM-Fusion
 
 ```bash
-python scripts/evaluate_fusion.py --bundle runs/fusion/model_bundle.pkl --output reports/fusion
+python scripts/evaluate_fusion.py --checkpoint runs/fusion/best.pt --output reports/fusion
 ```
 
-## Prediction workflow
+The CEUS and fusion evaluators export:
+
+- per-sample prediction tables
+- attention-weight tables
+- ROC and PR points
+- confusion matrix, ROC, and PR figures
+- validation-set Youden threshold
+
+## Prediction
 
 ### CEUS-GRU
 
@@ -157,53 +150,21 @@ python -m ceus_lrm_fusion.clinical.predict --bundle runs/clinical_lr/model_bundl
 ### LRM-Fusion
 
 ```bash
-python -m ceus_lrm_fusion.fusion.predict --bundle runs/fusion/model_bundle.pkl --ceus reports/ceus_predictions/predictions.csv --clinical reports/clinical_predictions/predictions.csv --output reports/fusion_predictions
+python -m ceus_lrm_fusion.fusion.predict --checkpoint runs/fusion/best.pt --input data/fusion/inference --output reports/fusion_predictions
 ```
 
-## Reported metrics
+## Parameter Count Utility
 
-The public code exports the core binary metrics used in the manuscript-oriented workflow:
+Use the formula-based reporter:
 
-- AUC
-- average precision
-- accuracy
-- sensitivity
-- specificity
-- precision
-- Brier score
-- expected calibration error
+```bash
+python scripts/report_model_stats.py
+```
 
-Decision curve analysis is not precomputed automatically in the current public release, but the exported per-sample probability tables are sufficient for downstream DCA scripts.
+## Privacy
 
-## Interpretability outputs
-
-The public repository preserves the interpretability directions emphasized in the manuscript:
-
-- temporal attention weights from `CEUS-GRU`
-- coefficient magnitude and bootstrap confidence intervals from `Clinical-LR`
-- branch-level probability contributions for `LRM-Fusion`
-
-## Clinical data preparation
-
-Two helper scripts are included for local dataset preparation:
-
-- `scripts/prepare_clinical_txt.py`: convert a spreadsheet into per-case text files
-- `scripts/prepare_clinical_folds.py`: create fold directories from a split manifest
-
-These scripts are intentionally generic and may require local adaptation to match institutional export formats.
-
-## Privacy and data availability
-
-No patient-level data, trained checkpoints, or private experimental artifacts are provided in this repository.
-
-For manuscript reproduction, users should prepare an institutional dataset with the same file structure and variable definitions. Public redistribution should follow local ethics, privacy, and data-sharing requirements.
-
-## Paper-to-code mapping
-
-- Manuscript temporal CEUS model: `src/ceus_lrm_fusion/ceus/`
-- Manuscript clinical logistic model: `src/ceus_lrm_fusion/clinical/`
-- Manuscript fusion model: `src/ceus_lrm_fusion/fusion/`
+No patient data, trained weights, or private experimental artifacts are distributed here.
 
 ## Citation
 
-If you use this repository in academic work, please cite the associated manuscript.
+If you use this repository in academic work, cite the associated manuscript.

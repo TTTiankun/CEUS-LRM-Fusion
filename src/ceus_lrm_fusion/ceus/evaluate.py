@@ -167,6 +167,7 @@ def main() -> None:
             directory=config[split_key],
             label_map=config["label_map"],
             augment=False,
+            confidence_cfg=config.get("confidence_suppression", {}),
         )
         y_true, y_pred, y_prob, attention, sample_names = evaluate_split(
             model=model,
